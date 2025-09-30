@@ -1,0 +1,57 @@
+:root {
+  --color-primary: #1A1919;
+  --color-secondary: #949494;
+  --color-shadow: rgba(0, 0, 0, .14);
+  --color-shadow-2: rgba(0, 0, 0, .1);
+  --color-mute: rgba(0, 0, 0, .7);
+  --color-mute-frame: rgba(255, 255, 255, .9);
+  --color-bg-1: #FFFFFF;
+  --color-bg-2: #F6F6F6;
+  --color-bg-3: #CFCFCF;
+  --color-bg-action: #EDECF3;
+  --color-bg-success: #F2F8F5;
+  --color-bg-warning: #FDF5EB;
+  --color-bg-alarm: #FFE9E9;
+  --color-bg-blur: rgba(255, 255, 255, .6);
+  --color-hover: #F6F5F5;
+  --color-divider: #EFEFEF;
+  --color-border: #EEEEEE;
+  --color-highlight: #F7F5FE;
+  --color-accent-alarm: #F13939;
+  --color-accent-action: #5B41F5;
+  --color-accent-warning: #FFC414;
+  --color-accent-success: #11C177;
+  --color-accent-lebedev: #BFC1FA;
+  --color-accent-varlamov: #2A72DB;
+  --color-on-primary: #FFFFFF;
+  --color-on-secondary: #FFFFFF;
+  --color-on-accent: #FFFFFF;
+  --color-on-social: #FFFFFF;
+  --color-social-facebook: #2F4694;
+  --color-social-google: #EA4335;
+  --color-social-vk: #0077FF;
+  --color-social-telegram: #0088CC;
+  --color-social-twitch: #8F50FB;
+  --color-social-telegraph: #F2F2F2;
+  --color-social-livejournal: #00B0EA;
+  --color-social-apple: #000000;
+  --color-social-dzen: #000000;
+  --color-social-yamusic: #FFBA29;
+  --color-primary-underline: rgba(26, 25, 25, .2);
+  --color-accent-action-underline: rgba(91, 65, 245, .3);
+}
+
+html, body, #app {
+  height: 100%;
+  font-size: 10px;
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg-1);
+  color: var(--color-primary);
+  font-family: 'Inter', -apple-system, Segoe UI, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+}
