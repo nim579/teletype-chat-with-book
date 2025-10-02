@@ -30,7 +30,7 @@ const svg = ref(
 
 <style lang="scss" scoped>
 .spinner {
-  --spinner-size: 3rem;
+  --spinner-size: 2rem;
 
   display: inline-block;
 
@@ -70,11 +70,11 @@ const svg = ref(
   }
 
   &__md {
-    --spinner-size: var(--size-2lg);
+    --spinner-size: 3rem;
   }
 
   &__lg {
-    --spinner-size: var(--size-xl);
+    --spinner-size: 4rem;
   }
 }
 </style>

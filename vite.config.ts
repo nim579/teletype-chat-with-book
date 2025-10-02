@@ -5,5 +5,3 @@ export default defineConfig({
   plugins: [vue()],
   envPrefix: 'APP_',
 })
-
-

@@ -1,258 +1,223 @@
 <script setup lang="ts">
-import { computed, ref, watch, reactive } from 'vue'
-import OpenAI from 'openai'
+import { computed, ref, watch, useTemplateRef } from 'vue'
 import IconSend from './components/IconSend.vue'
+import { characters, getPrompt } from './lib/prompts'
+import { useTextareaRows } from './lib/dom'
+import { useUserMedia } from './lib/userMedia'
+import { AssistantConfig, AssistantMessageEvent, useAssistant } from './lib/assistant'
+import { useWindowFocus } from '@vueuse/core'
+import AudioBars from './components/AudioBars.vue'
 import Spinner from './components/Spinner.vue'
+import IconMic from './components/IconMic.vue'
+import IconMicMuted from './components/IconMicMuted.vue'
+import IconChat from './components/IconChat.vue'
 
-type Character = {
-  name: string
-  gender: string
-  role: string
-  voice_description: string
-  notes: string
+type Message = {
+  id: string
+  date: Date
+  role: 'user' | 'assistant'
+  content: string
 }
 
-type History = {
-  conversation_id: string
-  typing: boolean
-  messages: { role: 'user' | 'assistant', content: string, date: Date }[]
-}
-
-const openai = new OpenAI({ apiKey: import.meta.env.APP_OPENAI_API_KEY, dangerouslyAllowBrowser: true })
-
-const vsId = ref(import.meta.env.APP_DEFAULT_FILE_ID)
 const filePath = ref('/alice_ch7.pdf')
-const isLoading = ref<string | null>(null)
-const characters = ref<Character[] | null>(null)
 const selectedCharacter = ref<number | null>(null)
+const messages = ref<Message[]>([])
+const isLoading = ref(false)
 const messageText = ref('')
-const textarea = ref<HTMLTextAreaElement | null>(null)
-const history = reactive(new Map<number, History>())
+const typing = ref(false)
+const active = ref<'audio' | 'text' | null>('audio')
+const ready = ref(false)
+const isMuted = ref(false)
+const hasStartedConversation = ref(false)
+const messagesContainer = useTemplateRef('messagesContainer')
 
-const character = computed(() => characters.value?.[selectedCharacter.value])
+const textarea = useTemplateRef('textarea')
+const textareaRows = useTextareaRows(textarea)
+const isWindowFocused = useWindowFocus()
 
-const messages = computed(() => history.get(selectedCharacter.value)?.messages)
-const typing = computed(() => history.get(selectedCharacter.value)?.typing)
+const character = computed(() => {
+  return characters[selectedCharacter.value] || null
+})
 
-const textareaRows = computed(() => {
-  if (!messageText.value) return 1;
+const assistantConfig = computed<AssistantConfig>(() => {
+  return {
+    type: 'realtime',
+    model: 'gpt-realtime',
+    instructions: character.value ? getPrompt(character.value) : undefined,
+    tools: [],
+    output_modalities: ['audio'],
+    audio: {
+      input: {
+        transcription: {
+          model: 'gpt-4o-mini-transcribe',
+        },
+      },
+      output: {
+        voice: character.value?.voice || 'cedar',
+      },
+    },
+  };
+})
 
-  const text = messageText.value;
-  const maxRows = 3;
+const {
+  stream: audioInput,
+  isMuted: isAudioInputMuted,
+  start: startAudioInput,
+  stop: stopAudioInput,
+} = useUserMedia({ audio: true });
 
-  // Подсчитываем явные переносы строк
-  const explicitLineBreaks = (text.match(/\n/g) || []).length;
-  let totalRows = explicitLineBreaks + 1;
+const {
+  audioOutput,
+  ready: assistantReady,
+  connect,
+  // disconnect,
+  sendMessage: sendAssistantMessage,
+  resumeConversation,
+} = useAssistant(
+  assistantConfig,
+  import.meta.env.APP_OPENAI_API_KEY,
+  audioInput,
+  false,
+  onMessageEvent,
+);
 
-  // Если есть доступ к textarea, учитываем автоматические переносы
-  if (textarea.value) {
-    const style = window.getComputedStyle(textarea.value);
-    const paddingLeft = parseFloat(style.paddingLeft);
-    const paddingRight = parseFloat(style.paddingRight);
-    const textareaWidth = textarea.value.clientWidth - paddingLeft - paddingRight;
-
-    // Создаем временный элемент для измерения ширины текста
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-
-    if (context) {
-      context.font = style.font;
-
-      // Разбиваем текст на строки и проверяем каждую
-      const lines = text.split('\n');
-      totalRows = 0;
-
-      for (const line of lines) {
-        if (line === '') {
-          totalRows += 1;
-        } else {
-          const textWidth = context.measureText(line).width;
-          const wrappedLines = Math.ceil(textWidth / textareaWidth) || 1;
-          totalRows += wrappedLines;
-        }
-      }
-    }
-  }
-
-  return Math.min(totalRows, maxRows);
+const isAudioMuted = computed(() => {
+  return active.value !== 'audio' || !isWindowFocused.value || isMuted.value;
 });
 
+const isAssistantEnabled = computed(() => {
+  return active.value != null;
+});
 
-const charactersSchema = {
-  "type": "object",
-  "properties": {
-    "text_name": {
-      "type": "string",
-      "description": "Название или заголовок текста"
-    },
-    "characters": {
-      "type": "array",
-      "description": "Список основных персонажей в тексте. Только один персонаж на имя",
-      "items": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "Имя персонажа на русском языке без имени на языке оригинала"
-          },
-          "gender": {
-            "type": "string",
-            "description": "Пол персонажа (мужской, женский, небинарный и т.д.)"
-          },
-          "role": {
-            "type": "string",
-            "description": "Роль персонажа в тексте"
-          },
-          "voice_description": {
-            "type": "string",
-            "description": "Описание голоса персонажа, его голосовой манеры или тональности"
-          },
-          "notes": {
-            "type": "string",
-            "description": "Дополнительные заметки, которые помогают понять поведение, мотивацию и характеристики персонажа"
-          }
-        },
-        "required": [
-          "name",
-          "gender",
-          "role",
-          "voice_description",
-          "notes"
-        ],
-        "additionalProperties": false
-      }
+function onMessageEvent(event: AssistantMessageEvent) {
+  if (event.type === 'typing') {
+    typing.value = true;
+  } else if (event.type === 'message') {
+    typing.value = false;
+
+    const msgIndex = messages.value.findIndex(msg => msg.id === event.id);
+
+    if (msgIndex >= 0) {
+      messages.value.splice(msgIndex, 1, {
+        id: event.id,
+        role: event.role,
+        date: new Date(),
+        content: event.text,
+      });
+    } else {
+      messages.value.push({
+        id: event.id,
+        role: event.role,
+        date: new Date(),
+        content: event.text,
+      });
     }
-  },
-  "required": [
-    "text_name",
-    "characters"
-  ],
-  "additionalProperties": false
-};
+  } else if (event.type === 'message_part') {
+    typing.value = true;
 
-const handleFileChange = async (event: Event) => {
-  characters.value = null;
-  selectedCharacter.value = null;
+    const msgIndex = messages.value.findIndex(msg => msg.id === event.id);
 
-  const file = (event.target as HTMLInputElement).files?.[0]
+    if (msgIndex >= 0) {
+      const msg = messages.value[msgIndex];
 
-  if (file) {
-    isLoading.value = 'update';
-
-    filePath.value = URL.createObjectURL(file)
-
-    const vs = await openai.vectorStores.create({});
-    await openai.vectorStores.fileBatches.uploadAndPoll(vs.id, { files: [file] });
-
-    vsId.value = vs.id;
-
-    generateCharacters('update');
+      messages.value.splice(msgIndex, 1, {
+        ...msg,
+        role: event.role,
+        content: msg.content + event.textDelta,
+      });
+    } else {
+      messages.value.push({
+        id: event.id,
+        role: event.role,
+        date: new Date(),
+        content: event.textDelta,
+      });
+    }
   }
-}
-
-const generateCharacters = async (mode: 'generate' | 'update') => {
-  isLoading.value = mode
-
-  const response = await openai.responses.parse({
-    model: 'gpt-5-mini',
-    tools: [{ type: "file_search", vector_store_ids: [vsId.value] }],
-    reasoning: {
-      effort: 'low',
-    },
-    text: {
-      format: {
-        type: 'json_schema',
-        name: 'characters',
-        schema: charactersSchema,
-      },
-    },
-    input: [
-      {
-        role: 'system',
-        content: 'Выведи список персонажей из данного текста. Не выводи лишние персонажи, только те, которые есть в тексте. Не выводи персонажи, о которых мало данных, массовку или третьестепенные персонажи.'
-      },
-    ],
-  });
-
-  characters.value = (response.output_parsed as any).characters;
-
-  isLoading.value = null
-}
-
-const handleMessageSubmit = async () => {
-  if (isLoading.value) return
-
-  const conversation = history.get(selectedCharacter.value)
-  if (!conversation) return
-
-  const inputText = messageText.value
-  messageText.value = ''
-
-  conversation.typing = true
-
-  conversation.messages.push({
-    role: 'user',
-    content: inputText,
-    date: new Date(),
-  })
-
-  const response = await openai.responses.create({
-    model: 'gpt-5-mini',
-    conversation: conversation.conversation_id,
-    tools: [{ type: "file_search", vector_store_ids: [vsId.value] }],
-    reasoning: {
-      effort: 'low',
-    },
-    input: [
-      {
-        role: 'user',
-        content: inputText,
-      },
-    ],
-  });
-
-  conversation.messages.push({
-    role: 'assistant',
-    content: response.output_text,
-    date: new Date(),
-  })
-
-  conversation.typing = false
 }
 
 function onKeyDown(event: KeyboardEvent) {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
-    handleMessageSubmit();
+    sendMessage();
   }
 }
 
-watch(character, async () => {
-  if (history.has(selectedCharacter.value)) {
-    return
-  }
+function sendMessage() {
+  const content = messageText.value.trim();
+  if (!content) return;
 
-  const conversation = await openai.conversations.create({
-    items: [
-      {
-        role: 'system',
-        content: `
-Вы - персонаж книги. Отвечай на вопросы пользователя.
-Данные о книге можешь искать в векторном хранилище.
-Ваше имя: ${character.value?.name}
-Ваш пол: ${character.value?.gender}
-Ваша роль: ${character.value?.role}
-Ваше описание: ${character.value?.voice_description}
-Ваши заметки: ${character.value?.notes}
-        `,
-      },
-    ],
-  })
+  messages.value.push({
+    id: new Date().toISOString(),
+    role: 'user',
+    date: new Date(),
+    content,
+  });
 
-  if (selectedCharacter.value != null) {
-    history.set(selectedCharacter.value, { conversation_id: conversation.id, typing: false, messages: [] })
+  sendAssistantMessage(content);
+  messageText.value = '';
+}
+
+function scrollToBottom() {
+  if (messagesContainer.value) {
+    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
   }
-})
+}
+
+watch(isAssistantEnabled, (value) => {
+  if (value) {
+    const isFirstCall = !hasStartedConversation.value;
+    hasStartedConversation.value = true;
+
+    resumeConversation(isFirstCall
+      ? null
+      : 'User has returned to the conversation. Please acknowledge their return naturally and be ready to continue helping them. You can briefly greet them and offer to continue dialog from previous topic.'
+    );
+  }
+}, { immediate: true });
+
+watch(isAudioMuted, (value) => {
+  isAudioInputMuted.value = value;
+}, {
+  immediate: true,
+});
+
+watch(assistantReady, (value) => {
+  ready.value = value;
+
+  if (!value) {
+    hasStartedConversation.value = false;
+  }
+}, {
+  immediate: true,
+});
+
+watch(active, () => {
+  if (active.value) {
+    startAudioInput();
+  } else {
+    stopAudioInput();
+  }
+}, {
+  immediate: true,
+});
+
+watch(character, () => {
+  connect();
+});
+
+watch(
+  () => [
+    messages.value,
+    typing.value
+  ],
+  () => {
+    scrollToBottom();
+  }, {
+    deep: true,
+    flush: 'post',
+  }
+);
 </script>
 
 <template>
@@ -264,17 +229,8 @@ watch(character, async () => {
     <aside>
       <h1>Чат с персонажем книги</h1>
 
-      <div class="controls">
-        <button
-          v-if="!characters"
-          class="button"
-          :class="{ 'main': !isLoading }"
-          :disabled="!!isLoading"
-          @click="generateCharacters('generate')"
-        >{{ isLoading === 'generate' ? 'Готовим список персонажей...' : 'Старт' }}</button>
-
+      <div v-if="!character" class="controls">
         <select
-          v-else
           v-model="selectedCharacter"
           class="button"
         >
@@ -287,57 +243,104 @@ watch(character, async () => {
             {{ character.name }}
           </option>
         </select>
-
-        <label v-if="!isLoading" class="button">
-          <input type="file" accept="application/pdf" @change="handleFileChange" />
-          <span>{{ isLoading === 'update' ? 'Готовим список персонажей...' : 'Свой текст' }}</span>
-        </label>
       </div>
 
       <div v-if="character" class="chat">
-        <template v-if="messages">
-          <div class="chat-messages">
-            <TransitionGroup name="chat-message">
-              <div
-                v-for="message in messages"
-                :key="message.date.getTime()"
-                class="chat-message"
-                :class="{
-                  'chat-message-user': message.role === 'user',
-                  'chat-message-assistant': message.role === 'assistant',
-                }"
-              >
-                <div class="chat-message-content">
-                  {{ message.content }}
-                </div>
+        <div ref="messagesContainer" class="chat-messages">
+          <TransitionGroup name="chat-message">
+            <div
+              v-for="message in messages"
+              :key="message.date.getTime()"
+              class="chat-message"
+              :class="{
+                'chat-message-user': message.role === 'user',
+                'chat-message-assistant': message.role === 'assistant',
+              }"
+            >
+              <div v-if="message.role === 'assistant'" class="chat-message-name">
+                {{ character?.name }}
               </div>
+              <div class="chat-message-content">
+                {{ message.content }}
+              </div>
+            </div>
 
-              <div v-if="typing" key="_typing_" class="chat-typing">
-                <div class="chat-typing-text">
-                  Набирает ответ...
-                </div>
+            <div v-if="typing" key="_typing_" class="chat-typing">
+              <div class="chat-typing-text">
+                Набирает ответ...
               </div>
-            </TransitionGroup>
-          </div>
-          <form class="chat-input" @submit.prevent="handleMessageSubmit">
-            <textarea
-              v-model="messageText"
-              ref="textarea"
-              class="chat-textarea"
-              :rows="textareaRows"
-              placeholder="Напишите сообщение..."
-              @keydown="onKeyDown"
+            </div>
+          </TransitionGroup>
+        </div>
+
+        <div v-if="active === 'audio'" class="audio">
+          <div class="audio-output">
+            <audio
+              autoplay
+              :srcObject="audioOutput"
             />
-            <button class="chat-button" :disabled="!!isLoading" title="Отправить сообщение" type="submit">
-              <IconSend />
-            </button>
-          </form>
-        </template>
-        <Spinner
-          v-else
-          central
-          class="chat-spinner"
-        />
+            <AudioBars
+              v-if="ready"
+              key="audio"
+              :audio="audioOutput"
+              bar-color="#000"
+              :bar-width="3"
+              :bar-gap="4"
+              rounded
+              class="audio-output-bars"
+            />
+            <Spinner v-if="!ready" size="sm"/>
+          </div>
+
+          <button
+            class="audio-input"
+            :class="{ 'error': isMuted }"
+            @click="isMuted = !isMuted"
+          >
+            <IconMic
+              v-if="!isMuted"
+              class="audio-input-icon"
+            />
+            <IconMicMuted
+              v-else
+              class="audio-input-icon"
+            />
+            <transition name="audio-input-bars">
+              <AudioBars
+                v-if="audioInput && !isMuted"
+                :audio="audioInput"
+                bar-color="#FFF"
+                :bar-count="3"
+                :bar-width="4"
+                :bar-gap="3"
+                rounded
+                class="audio-input-bars"
+              />
+            </transition>
+          </button>
+
+          <button class="control-button" @click="active = 'text'">
+            <IconChat />
+          </button>
+        </div>
+
+        <form v-if="active === 'text'" class="chat-input" @submit.prevent="sendMessage">
+          <textarea
+            v-model="messageText"
+            ref="textarea"
+            class="chat-textarea"
+            :rows="textareaRows"
+            placeholder="Напишите сообщение..."
+            @keydown="onKeyDown"
+          />
+          <button class="chat-button" :disabled="!!isLoading" title="Отправить сообщение" type="submit">
+            <IconSend />
+          </button>
+
+          <button class="control-button" @click="active = 'audio'">
+            <IconMic />
+          </button>
+        </form>
       </div>
     </aside>
   </main>
@@ -352,10 +355,14 @@ watch(character, async () => {
 }
 
 article {
-  flex: 1 1 70%;
+  flex: 1 1 60%;
   max-height: 100%;
   min-height: 0;
   overflow: auto;
+
+  @media (max-width: 768px) {
+    display: none;
+  }
 }
 
 iframe {
@@ -368,7 +375,7 @@ aside {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  flex: 1 1 30%;
+  flex: 1 1 35%;
   border-left: 1px solid var(--color-divider);
   padding: 2.5rem 1.5rem;
   box-sizing: border-box;
@@ -400,8 +407,8 @@ aside {
   border-style: solid;
   border-radius: 7px;
   background-color: var(--color-bg-1);
-  color: var(--color-primary, #1A1919);
-  border-color: var(--color-primary, #1A1919);
+  color: var(--color-primary);
+  border-color: var(--color-primary);
   outline: 0;
   box-shadow: none;
   font-family: Inter, Helvetica Neue, Helvetica, sans-serif;
@@ -427,6 +434,11 @@ aside {
     top: 0;
     left: 0;
     cursor: pointer;
+  }
+
+  &.error {
+    background-color: var(--color-accent-alarm);
+    border-color: var(--color-accent-alarm);
   }
 }
 .button:disabled,
@@ -513,7 +525,7 @@ aside {
   outline: none;
   resize: none;
   background-color: var(--color-bg-1);
-  border: 1px solid var(--color-divider);
+  border: 1px solid var(--color-border);
   border-radius: 2rem;
 
   transition: all .2s;
@@ -542,18 +554,10 @@ aside {
 
 .chat-message {
   display: flex;
-  flex-direction: row;
-  align-items: center;
+  flex-direction: column;
+  align-items: start;
   justify-content: start;
   gap: 0.5rem;
-  padding: 1.5rem;
-  border-radius: 1.5rem;
-  max-width: 85%;
-
-  font-size: 1.4rem;
-  font-weight: 400;
-  line-height: 2rem;
-  color: var(--color-primary);
 
   &-enter-active {
     transition: all .2s;
@@ -568,16 +572,41 @@ aside {
     margin-top: auto;
   }
 }
-.chat-message-user {
+
+.chat-message-name {
+  display: block;
+  font-size: 1.2rem;
+  font-weight: 400;
+  line-height: 1.5rem;
+  color: var(--color-secondary);
+}
+.chat-message-user .chat-message-name {
+  text-align: right;
+}
+
+.chat-message-content {
+  display: block;
+  padding: 1.5rem;
+  border-radius: 1.5rem;
+  max-width: 85%;
+
+  font-size: 1.4rem;
+  font-weight: 400;
+  line-height: 2rem;
+  color: var(--color-primary);
+}
+.chat-message-user .chat-message-content {
+
   align-self: flex-end;
-  background-color: var(--color-bg-3);
+  background-color: var(--color-bg-action);
   border-start-end-radius: 0.1rem;
 }
-.chat-message-assistant {
+.chat-message-assistant .chat-message-content {
   align-self: flex-start;
   background-color: var(--color-bg-2);
   border-start-start-radius: 0.1rem;
 }
+
 .chat-typing {
   display: flex;
   flex: 0 0 auto;
@@ -618,6 +647,116 @@ aside {
 }
 .chat-spinner {
   color: var(--color-secondary);
+}
+
+.audio {
+  display: flex;
+  flex-direction: row;
+  align-items: end;
+  justify-content: start;
+  gap: 0.5em;
+  margin: 1rem;
+  padding: 0.5em;
+  box-sizing: border-box;
+  border-radius: 3rem;
+  background-color: var(--color-bg-2);
+}
+
+.audio-output {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 3rem;
+  padding: 0.5rem 2rem;
+  box-sizing: content-box;
+  color: var(--color-primary);
+  background-color: var(--color-bg-1);
+  border: 1px solid var(--color-border);
+  border-radius: 2rem;
+
+  transition: all .2s;
+
+  cursor: pointer;
+}
+
+.audio-output-bars {
+  width: 100%;
+  height: 3rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.audio-input {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 4rem;
+  height: 4rem;
+  gap: 4px;
+  padding: 0;
+  box-sizing: content-box;
+  border-radius: 4rem;
+  padding: 0 0.5rem;
+  border: 1px solid var(--color-accent-action);
+  background-color: var(--color-accent-action);
+  color: var(--color-on-accent);
+  cursor: pointer;
+  transition: all .2s;
+
+  &.error {
+    background-color: var(--color-accent-alarm);
+    border-color: var(--color-accent-alarm);
+  }
+}
+
+.audio-input-bars {
+  width: 100%;
+  height: 3rem;
+  min-width: 0;
+  max-width: 100%;
+
+  &-enter-active,
+  &-leave-active {
+    transition: all .4s;
+  }
+
+  &-enter-from,
+  &-leave-to {
+    opacity: 0;
+    margin-left: -44px;
+  }
+}
+
+.audio-input-icon {
+  flex: 0 0 auto;
+  color: var(--color-on-accent);
+}
+
+.control-button {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 4rem;
+  height: 4rem;
+  gap: 4px;
+  padding: 0;
+  box-sizing: content-box;
+  border-radius: 4rem;
+  padding: 0 0.5rem;
+  background-color: var(--color-bg-1);
+  color: var(--color-primary);
+  border: 1px solid var(--color-border);
+  cursor: pointer;
+  transition: all .2s;
 }
 </style>
 
