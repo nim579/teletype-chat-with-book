@@ -202,7 +202,7 @@ watch(isAssistantEnabled, (value) => {
 
     resumeConversation(isFirstCall
       ? null
-      : 'User has returned to the conversation. Please acknowledge their return naturally and be ready to continue helping them. You can briefly greet them and offer to continue dialog from previous topic.'
+      : 'Пользователь вернулся к разговору. Поприветствуй его естественно и будь готов продолжить диалог.'
     );
   }
 }, { immediate: true });
